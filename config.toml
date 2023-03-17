@@ -1,0 +1,13 @@
+# config.toml
+
+[kernel]
+size = 5
+decay_constant = 0.1
+decay_type = "linear" # "linear" or "exponential"
+penalty_constant = 1
+
+[visualizer]
+refresh_rate = 10 # Refresh rate in frames per second
+
+[files]
+initial_state_file = "initial_state_large.csv"

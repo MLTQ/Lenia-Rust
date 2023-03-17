@@ -1,0 +1,15 @@
+[package]
+name = "lenia-rust"
+version = "0.1.0"
+edition = "2018"
+resolver = "2"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+pixels = "0.8"
+winit = "0.25"
+csv = "1.1"
+ndarray = "0.15"
+toml = "0.5"
+rand = "0.8"
+rayon = "1.5.1"

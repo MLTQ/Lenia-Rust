@@ -1,5 +1,30 @@
-This is an impolementation of Lenia TODO: Put original lenia paper here
-Run the python script, and edit the parameters. Have fun.
+This is an implementation of Lenia (continuous cellular automata) in Rust.
+
+## Frontends
+
+### Native egui frontend (new)
+
+```bash
+cargo run
+```
+
+What you can do in the egui app:
+- Play/pause the simulation, single-step, clear, randomize
+- Tune Lenia parameters: `kernel_size`, `num_peaks`, `betas`, `mu`, `sigma`, `dt`, `growth_func_type`
+- Enable periodic food placement (fixed or randomized food sources)
+- Draw directly on the grid with:
+  - `Draw Life`
+  - `Erase`
+  - `Place Food`
+
+### Python frontend (legacy)
+
+Build the release library, then run:
+
+```bash
+cargo build --release
+python tester.py
+```
 
 Here's a brief explanation of each parameter and its role in the Lenia simulation:
 
@@ -25,7 +50,6 @@ growth_func_type: This parameter determines the type of growth function used in 
 EXPONENTIAL, and STEP.
 
 Keep in mind that these parameters can interact with each other in complex ways, so finding the right combination to produce desired behaviors might require some experimentation and fine-tuning.
-
 
 
 

@@ -45,9 +45,9 @@ M = N = 256
 kernel_size=21
 num_peaks=2
 betas=np.array([1, 5.0])
-mu=1.0
+mu=1.01
 sigma=0.14
-dt=0.21
+dt=0.101
 growth_func_type=1
 scale_factor = 3
 food = True

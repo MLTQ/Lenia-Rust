@@ -7,7 +7,9 @@ edition = "2021"
 [dependencies]
 ndarray = "0.15.4"
 libc = "0.2.112"
+eframe = "0.29"
+rand = "0.8.5"
 
 [lib]
 name = "lenia_3"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]

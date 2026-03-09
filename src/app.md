@@ -1,7 +1,7 @@
 # app.rs
 
 ## Purpose
-Implements a native `eframe/egui` frontend for Lenia with full parameter tuning, simulation controls, resizable fields, alternate color scales, interactive drawing/food placement, and a live kernel preview panel with both a heatmap and radial plot.
+Implements a native `eframe/egui` frontend for Lenia with full parameter tuning, simulation controls, resizable fields, alternate color scales, an explorer search mode, interactive drawing/food placement, and a live kernel preview panel with both a heatmap and radial plot.
 
 ## Components
 
@@ -21,6 +21,10 @@ Implements a native `eframe/egui` frontend for Lenia with full parameter tuning,
 ### `LeniaApp::resize_world`
 - **Does**: Reallocates the field to a requested size while preserving the centered overlapping region of the old state.
 - **Interacts with**: Field size controls, brush mapping, and food source regeneration.
+
+### `ExplorerSettings`, `ExplorerCandidate`, and explorer helpers
+- **Does**: Mutates the current parameter set, evaluates short simulations on a smaller centered copy of the field, scores the outcomes, and surfaces the best candidates for one-click application.
+- **Interacts with**: `run_step`, `LeniaParams`, the explorer panel in `draw_controls`, and the current world state.
 
 ### `LeniaApp::kernel_to_image` and `LeniaApp::refresh_kernel_texture`
 - **Does**: Builds a normalized kernel heatmap image from current parameters and uploads/updates an egui texture.
@@ -55,6 +59,7 @@ Implements a native `eframe/egui` frontend for Lenia with full parameter tuning,
 | Existing workflow | Food refresh supports fixed and randomized source placement | Removing periodic food controls |
 | Parameter tuning UX | Bottom pane shows current kernel heatmap and radial profile for the selected kernel mode | Removing or desynchronizing preview refresh |
 | Runtime sizing | Applying a new field size preserves centered content and updates pointer mapping to new dimensions | Breaking resize semantics or leaving stale dimensions |
+| Explorer workflow | Search results reflect local mutations around the current params and can be applied directly | Breaking candidate scoring, mutation, or apply semantics |
 
 ## Notes
 - Texture updates use nearest filtering so each automaton cell remains crisp.
@@ -63,3 +68,4 @@ Implements a native `eframe/egui` frontend for Lenia with full parameter tuning,
 - The settings panel is scrollable so the kernel preview remains accessible even when the window is short.
 - Kernel mode changes do not affect the Python FFI path; they are only exposed through the native app.
 - Color scales affect both the simulation field and the kernel preview so the palette stays visually consistent.
+- Explorer search uses a smaller centered copy of the field for speed, so it is a local heuristic rather than a full-resolution guarantee.

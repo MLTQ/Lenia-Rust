@@ -88,6 +88,36 @@ impl ColorScale {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ExplorerSettings {
+    trial_count: usize,
+    steps_per_trial: usize,
+    evaluation_size: usize,
+    mutation_scale: f64,
+    keep_top: usize,
+}
+
+impl Default for ExplorerSettings {
+    fn default() -> Self {
+        Self {
+            trial_count: 6,
+            steps_per_trial: 10,
+            evaluation_size: 96,
+            mutation_scale: 0.22,
+            keep_top: 6,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExplorerCandidate {
+    params: LeniaParams,
+    score: f64,
+    final_mean: f64,
+    activity: f64,
+    variance: f64,
+}
+
 fn sample_gradient(value: f64, colors: &[Color32]) -> Color32 {
     if colors.is_empty() {
         return Color32::BLACK;
@@ -130,6 +160,43 @@ fn values_to_color_image(
     }
 
     ColorImage::from_rgb([width, height], &rgb)
+}
+
+fn mean_abs_difference(left: &Array2<f64>, right: &Array2<f64>) -> f64 {
+    let mut total = 0.0;
+    for (lhs, rhs) in left.iter().zip(right.iter()) {
+        total += (*lhs - *rhs).abs();
+    }
+    total / left.len() as f64
+}
+
+fn mean_variance(world: &Array2<f64>, mean: f64) -> f64 {
+    let mut total = 0.0;
+    for value in world.iter() {
+        total += (*value - mean).powi(2);
+    }
+    total / world.len() as f64
+}
+
+fn centered_resized_copy(world: &Array2<f64>, rows: usize, cols: usize) -> Array2<f64> {
+    let rows = rows.clamp(MIN_WORLD_SIZE, MAX_WORLD_SIZE);
+    let cols = cols.clamp(MIN_WORLD_SIZE, MAX_WORLD_SIZE);
+    let mut resized = Array2::<f64>::zeros((rows, cols));
+    let row_copy = rows.min(world.nrows());
+    let col_copy = cols.min(world.ncols());
+    let src_row_start = (world.nrows() - row_copy) / 2;
+    let src_col_start = (world.ncols() - col_copy) / 2;
+    let dst_row_start = (rows - row_copy) / 2;
+    let dst_col_start = (cols - col_copy) / 2;
+
+    for row in 0..row_copy {
+        for col in 0..col_copy {
+            resized[(dst_row_start + row, dst_col_start + col)] =
+                world[(src_row_start + row, src_col_start + col)];
+        }
+    }
+
+    resized
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +243,8 @@ pub struct LeniaApp {
     kernel_texture: Option<TextureHandle>,
     pending_world_rows: usize,
     pending_world_cols: usize,
+    explorer: ExplorerSettings,
+    explorer_results: Vec<ExplorerCandidate>,
 }
 
 impl LeniaApp {
@@ -195,6 +264,8 @@ impl LeniaApp {
             kernel_texture: None,
             pending_world_rows: WORLD_SIZE,
             pending_world_cols: WORLD_SIZE,
+            explorer: ExplorerSettings::default(),
+            explorer_results: Vec::new(),
         };
         app.ensure_beta_count();
         app.regenerate_food_sources();
@@ -223,26 +294,120 @@ impl LeniaApp {
             return;
         }
 
-        let mut resized = Array2::<f64>::zeros((rows, cols));
-        let row_copy = rows.min(self.world.nrows());
-        let col_copy = cols.min(self.world.ncols());
-        let src_row_start = (self.world.nrows() - row_copy) / 2;
-        let src_col_start = (self.world.ncols() - col_copy) / 2;
-        let dst_row_start = (rows - row_copy) / 2;
-        let dst_col_start = (cols - col_copy) / 2;
-
-        for row in 0..row_copy {
-            for col in 0..col_copy {
-                resized[(dst_row_start + row, dst_col_start + col)] =
-                    self.world[(src_row_start + row, src_col_start + col)];
-            }
-        }
-
-        self.world = resized;
+        self.world = centered_resized_copy(&self.world, rows, cols);
         self.pending_world_rows = rows;
         self.pending_world_cols = cols;
         self.frame_counter = 0;
+        self.explorer_results.clear();
         self.regenerate_food_sources();
+    }
+
+    fn run_explorer_search(&mut self) {
+        let mut rng = rand::thread_rng();
+        let base_world = centered_resized_copy(
+            &self.world,
+            self.explorer.evaluation_size,
+            self.explorer.evaluation_size,
+        );
+        let base_params = self.params.clone();
+        let mut candidates = Vec::with_capacity(self.explorer.trial_count);
+
+        for _ in 0..self.explorer.trial_count {
+            let candidate_params = self.mutated_params(&base_params, &mut rng);
+            if let Some(candidate) = self.evaluate_candidate(&base_world, candidate_params) {
+                candidates.push(candidate);
+            }
+        }
+
+        candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
+        candidates.truncate(self.explorer.keep_top.max(1));
+        self.explorer_results = candidates;
+    }
+
+    fn mutated_params<R: Rng>(&self, base: &LeniaParams, rng: &mut R) -> LeniaParams {
+        let mut params = base.clone();
+
+        if rng.gen_bool((0.2 * self.explorer.mutation_scale).clamp(0.0, 0.6)) {
+            let delta = if rng.gen_bool(0.5) { 2isize } else { -2isize };
+            let kernel_size = params.kernel_size as isize + delta;
+            params.kernel_size = kernel_size.clamp(3, 99) as usize;
+        }
+        params.kernel_size |= 1;
+
+        if rng.gen_bool((0.35 * self.explorer.mutation_scale).clamp(0.0, 0.75)) {
+            let delta = if rng.gen_bool(0.5) { 1isize } else { -1isize };
+            params.num_peaks = ((params.num_peaks as isize + delta).clamp(1, 8)) as usize;
+        }
+
+        params.betas = params.normalized_betas();
+        for (index, beta) in params.betas.iter_mut().enumerate() {
+            match params.kernel_mode {
+                KernelMode::CenteredGaussian => {
+                    let factor = (1.0 + rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale)
+                        .clamp(0.2, 5.0);
+                    *beta = (*beta * factor).clamp(0.01, 25.0);
+                }
+                KernelMode::GaussianRings if index == 0 => {
+                    let factor = (1.0 + rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale)
+                        .clamp(0.2, 4.0);
+                    *beta = (*beta * factor).clamp(0.01, 25.0);
+                }
+                KernelMode::GaussianRings => {
+                    let delta = rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 2.5;
+                    *beta = (*beta + delta).clamp(0.0, 8.0);
+                }
+            }
+        }
+
+        params.mu = (params.mu + rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 0.12)
+            .clamp(0.0, 2.0);
+        params.sigma = (params.sigma
+            + rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 0.06)
+            .clamp(0.01, 1.0);
+        params.dt = (params.dt + rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 0.03)
+            .clamp(0.001, 0.5);
+        params
+    }
+
+    fn evaluate_candidate(
+        &self,
+        base_world: &Array2<f64>,
+        params: LeniaParams,
+    ) -> Option<ExplorerCandidate> {
+        let mut world = base_world.clone();
+        let initial_mean = world.sum() / world.len() as f64;
+        let mut total_change = 0.0;
+
+        for _ in 0..self.explorer.steps_per_trial {
+            let next = run_step(&world, &params);
+            total_change += mean_abs_difference(&world, &next);
+            world = next;
+        }
+
+        let final_mean = world.sum() / world.len() as f64;
+        if final_mean <= 1e-5 {
+            return None;
+        }
+
+        let variance = mean_variance(&world, final_mean);
+        let activity = total_change / self.explorer.steps_per_trial.max(1) as f64;
+        let survival = if (0.01..0.95).contains(&final_mean) {
+            1.0
+        } else {
+            0.0
+        };
+        let stability = (1.0 - ((final_mean - initial_mean).abs() / 0.35)).clamp(0.0, 1.0);
+        let activity_score = (activity / 0.03).clamp(0.0, 1.5);
+        let variance_score = (variance / 0.02).clamp(0.0, 1.5);
+        let score = survival * 2.0 + stability * 0.75 + activity_score + variance_score;
+
+        Some(ExplorerCandidate {
+            params,
+            score,
+            final_mean,
+            activity,
+            variance,
+        })
     }
 
     fn regenerate_food_sources(&mut self) {
@@ -467,9 +632,11 @@ impl LeniaApp {
         ui.horizontal(|ui| {
             if ui.button("Randomize").clicked() {
                 self.world = random_world(self.world.nrows(), self.world.ncols());
+                self.explorer_results.clear();
             }
             if ui.button("Clear").clicked() {
                 self.world.fill(0.0);
+                self.explorer_results.clear();
             }
         });
         ui.horizontal(|ui| {
@@ -703,6 +870,49 @@ impl LeniaApp {
                     .step_by(0.01),
             );
             ui.label("Click and drag on the simulation to paint.");
+        });
+
+        ui.separator();
+        ui.collapsing("Explorer", |ui| {
+            ui.label("Search nearby parameter space on a smaller centered copy of the field.");
+            ui.add(egui::Slider::new(&mut self.explorer.trial_count, 2..=24).text("trials"));
+            ui.add(
+                egui::Slider::new(&mut self.explorer.steps_per_trial, 2..=48).text("steps/trial"),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.explorer.evaluation_size, 32..=256).text("eval size"),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.explorer.mutation_scale, 0.05..=1.0)
+                    .text("mutation scale")
+                    .step_by(0.01),
+            );
+            ui.add(egui::Slider::new(&mut self.explorer.keep_top, 1..=12).text("keep top"));
+            if ui.button("Run Explorer").clicked() {
+                self.run_explorer_search();
+            }
+            if self.explorer_results.is_empty() {
+                ui.label("No results yet.");
+            } else {
+                let mut apply_result_index = None;
+                for (index, candidate) in self.explorer_results.iter().enumerate() {
+                    ui.separator();
+                    ui.label(format!(
+                        "#{index} score {:.2}  pop {:.3}  act {:.3}  var {:.3}",
+                        candidate.score,
+                        candidate.final_mean,
+                        candidate.activity,
+                        candidate.variance
+                    ));
+                    if ui.button(format!("Apply Result {index}")).clicked() {
+                        apply_result_index = Some(index);
+                    }
+                }
+                if let Some(index) = apply_result_index {
+                    self.params = self.explorer_results[index].params.clone();
+                    self.ensure_beta_count();
+                }
+            }
         });
 
         ui.separator();

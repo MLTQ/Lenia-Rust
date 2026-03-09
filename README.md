@@ -13,6 +13,7 @@ What you can do in the egui app:
 - Play/pause the simulation, single-step, clear, randomize
 - Resize the field at runtime
 - Switch between multiple color scales
+- Run an explorer search that mutates the current parameters and keeps the highest-scoring nearby variants
 - Tune Lenia parameters: `kernel_mode`, `kernel_size`, `num_peaks`, `betas`, `mu`, `sigma`, `dt`, `growth_func_type`
 - Enable periodic food placement (fixed or randomized food sources)
 - Draw directly on the grid with:

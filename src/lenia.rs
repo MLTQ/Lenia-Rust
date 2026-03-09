@@ -20,8 +20,24 @@ impl GrowthFuncType {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelMode {
+    CenteredGaussian,
+    GaussianRings,
+}
+
+impl KernelMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CenteredGaussian => "CENTERED_GAUSSIAN",
+            Self::GaussianRings => "GAUSSIAN_RINGS",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LeniaParams {
+    pub kernel_mode: KernelMode,
     pub kernel_size: usize,
     pub num_peaks: usize,
     pub betas: Vec<f64>,
@@ -34,6 +50,7 @@ pub struct LeniaParams {
 impl Default for LeniaParams {
     fn default() -> Self {
         Self {
+            kernel_mode: KernelMode::CenteredGaussian,
             kernel_size: 21,
             num_peaks: 2,
             betas: vec![1.0, 5.0],
@@ -46,6 +63,19 @@ impl Default for LeniaParams {
 }
 
 impl LeniaParams {
+    pub fn gaussian_rings_preset() -> Self {
+        Self {
+            kernel_mode: KernelMode::GaussianRings,
+            kernel_size: 39,
+            num_peaks: 3,
+            betas: vec![4.5, 2.0, 1.0],
+            mu: 1.0,
+            sigma: 0.18,
+            dt: 0.04,
+            growth_func_type: GrowthFuncType::Exponential,
+        }
+    }
+
     pub fn normalized_betas(&self) -> Vec<f64> {
         let peak_count = self.num_peaks.max(1);
         let mut betas = if self.betas.is_empty() {
@@ -61,8 +91,12 @@ impl LeniaParams {
             betas.truncate(peak_count);
         }
 
-        for beta in &mut betas {
-            *beta = beta.max(0.0001);
+        for (index, beta) in betas.iter_mut().enumerate() {
+            *beta = match self.kernel_mode {
+                KernelMode::CenteredGaussian => beta.max(0.0001),
+                KernelMode::GaussianRings if index == 0 => beta.max(0.0001),
+                KernelMode::GaussianRings => beta.max(0.0),
+            };
         }
 
         betas
@@ -193,6 +227,13 @@ fn convolve2d_periodic(input: &ArrayView2<f64>, kernel: &Array2<f64>) -> Array2<
 }
 
 pub fn generate_kernel(params: &LeniaParams) -> Array2<f64> {
+    match params.kernel_mode {
+        KernelMode::CenteredGaussian => generate_centered_gaussian_kernel(params),
+        KernelMode::GaussianRings => generate_gaussian_rings_kernel(params),
+    }
+}
+
+fn generate_centered_gaussian_kernel(params: &LeniaParams) -> Array2<f64> {
     let kernel_size = params.kernel_size.max(1) | 1;
     let peak_count = params.num_peaks.max(1);
     let betas = params.normalized_betas();
@@ -213,6 +254,89 @@ pub fn generate_kernel(params: &LeniaParams) -> Array2<f64> {
     }
 
     kernel
+}
+
+fn generate_gaussian_rings_kernel(params: &LeniaParams) -> Array2<f64> {
+    let kernel_size = params.kernel_size.max(1) | 1;
+    let peak_count = params.num_peaks.max(1);
+    let betas = params.normalized_betas();
+    let center = (kernel_size - 1) as f64 / 2.0;
+    let max_radius = center.max(1.0);
+    let base_width = betas[0].max(0.5);
+    let ring_count = peak_count.saturating_sub(1);
+    let ring_spacing = if ring_count > 0 {
+        max_radius / peak_count as f64
+    } else {
+        max_radius
+    };
+    let ring_width = (base_width * 0.2).max(0.6);
+    let target_mass = generate_centered_gaussian_kernel(params).sum();
+    let mut kernel = Array2::<f64>::zeros((kernel_size, kernel_size));
+
+    for ((row, col), value) in kernel.indexed_iter_mut() {
+        let dy = row as f64 - center;
+        let dx = col as f64 - center;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let mut value_acc = (-(distance * distance) / (2.0 * base_width * base_width)).exp();
+
+        for (ring_index, ring_weight) in betas.iter().enumerate().take(peak_count).skip(1) {
+            let ring_center = ring_index as f64 * ring_spacing;
+            let ring_profile =
+                (-((distance - ring_center).powi(2)) / (2.0 * ring_width * ring_width)).exp();
+            value_acc += ring_weight * ring_profile;
+        }
+
+        *value = value_acc / (2.0 * PI);
+    }
+
+    let kernel_mass = kernel.sum();
+    if kernel_mass > 0.0 && target_mass > 0.0 {
+        let scale = target_mass / kernel_mass;
+        kernel.mapv_inplace(|value| value * scale);
+    }
+
+    kernel
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generate_kernel, KernelMode, LeniaParams};
+
+    #[test]
+    fn gaussian_rings_kernel_has_multiple_radial_peaks_for_preset() {
+        let params = LeniaParams::gaussian_rings_preset();
+        let kernel = generate_kernel(&params);
+        let center = (kernel.nrows() as f64 - 1.0) * 0.5;
+        let max_radius = center.floor() as usize;
+        let mut sums = vec![0.0; max_radius + 1];
+        let mut counts = vec![0usize; max_radius + 1];
+
+        for ((row, col), value) in kernel.indexed_iter() {
+            let dy = row as f64 - center;
+            let dx = col as f64 - center;
+            let radius = (dx * dx + dy * dy).sqrt().round() as usize;
+            if radius <= max_radius {
+                sums[radius] += *value;
+                counts[radius] += 1;
+            }
+        }
+
+        let profile: Vec<f64> = sums
+            .into_iter()
+            .zip(counts)
+            .map(|(sum, count)| if count > 0 { sum / count as f64 } else { 0.0 })
+            .collect();
+        let peak_count = profile
+            .windows(3)
+            .filter(|window| window[1] > window[0] && window[1] > window[2])
+            .count();
+
+        assert_eq!(params.kernel_mode, KernelMode::GaussianRings);
+        assert!(
+            peak_count >= 2,
+            "expected multiple radial peaks, got {peak_count}"
+        );
+    }
 }
 
 fn apply_growth_mapping(

@@ -3,4 +3,4 @@ mod ffi;
 pub mod lenia;
 
 pub use ffi::run_lenia;
-pub use lenia::{GrowthFuncType, LeniaParams};
+pub use lenia::{GrowthFuncType, KernelMode, LeniaParams};

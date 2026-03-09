@@ -23,4 +23,4 @@ Library entrypoint that exposes Lenia simulation primitives, the native egui app
 |-----------|---------|------------------|
 | `src/main.rs` | `app::run()` is accessible through crate exports | Renaming/removing `app` module |
 | Python ctypes loader | `run_lenia` symbol is exported from cdylib | Symbol name/signature changes |
-| Internal Rust code | `GrowthFuncType`, `LeniaParams` are re-exported | Removing/retyping these re-exports |
+| Internal Rust code | `GrowthFuncType`, `KernelMode`, `LeniaParams` are re-exported | Removing/retyping these re-exports |

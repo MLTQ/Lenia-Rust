@@ -1,18 +1,135 @@
 use crate::lenia::{
     apply_circular_brush, generate_kernel, random_world, run_step, stamp_gaussian_blob,
-    GrowthFuncType, LeniaParams,
+    GrowthFuncType, KernelMode, LeniaParams,
 };
-use eframe::egui::{self, ColorImage, Sense, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, Sense, TextureHandle, TextureOptions};
 use ndarray::Array2;
 use rand::Rng;
 
 const WORLD_SIZE: usize = 256;
+const MIN_WORLD_SIZE: usize = 32;
+const MAX_WORLD_SIZE: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaintTool {
     DrawLife,
     Erase,
     PlaceFood,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ColorScale {
+    Grayscale,
+    Viridis,
+    Plasma,
+    Inferno,
+    Ocean,
+}
+
+impl ColorScale {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Grayscale => "GRAYSCALE",
+            Self::Viridis => "VIRIDIS",
+            Self::Plasma => "PLASMA",
+            Self::Inferno => "INFERNO",
+            Self::Ocean => "OCEAN",
+        }
+    }
+
+    fn color(self, value: f64) -> Color32 {
+        let value = value.clamp(0.0, 1.0);
+        match self {
+            Self::Grayscale => {
+                let level = (value * 255.0) as u8;
+                Color32::from_rgb(level, level, level)
+            }
+            Self::Viridis => sample_gradient(
+                value,
+                &[
+                    Color32::from_rgb(68, 1, 84),
+                    Color32::from_rgb(59, 82, 139),
+                    Color32::from_rgb(33, 145, 140),
+                    Color32::from_rgb(94, 201, 98),
+                    Color32::from_rgb(253, 231, 37),
+                ],
+            ),
+            Self::Plasma => sample_gradient(
+                value,
+                &[
+                    Color32::from_rgb(13, 8, 135),
+                    Color32::from_rgb(126, 3, 168),
+                    Color32::from_rgb(203, 71, 119),
+                    Color32::from_rgb(248, 149, 64),
+                    Color32::from_rgb(240, 249, 33),
+                ],
+            ),
+            Self::Inferno => sample_gradient(
+                value,
+                &[
+                    Color32::from_rgb(0, 0, 4),
+                    Color32::from_rgb(87, 15, 109),
+                    Color32::from_rgb(187, 55, 84),
+                    Color32::from_rgb(249, 142, 8),
+                    Color32::from_rgb(252, 255, 164),
+                ],
+            ),
+            Self::Ocean => sample_gradient(
+                value,
+                &[
+                    Color32::from_rgb(2, 14, 28),
+                    Color32::from_rgb(0, 79, 122),
+                    Color32::from_rgb(0, 150, 136),
+                    Color32::from_rgb(120, 220, 232),
+                    Color32::from_rgb(236, 253, 255),
+                ],
+            ),
+        }
+    }
+}
+
+fn sample_gradient(value: f64, colors: &[Color32]) -> Color32 {
+    if colors.is_empty() {
+        return Color32::BLACK;
+    }
+    if colors.len() == 1 {
+        return colors[0];
+    }
+
+    let scaled = value.clamp(0.0, 1.0) * (colors.len() - 1) as f64;
+    let index = scaled.floor() as usize;
+    let next_index = (index + 1).min(colors.len() - 1);
+    let t = scaled - index as f64;
+    lerp_color(colors[index], colors[next_index], t)
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f64) -> Color32 {
+    let t = t.clamp(0.0, 1.0) as f32;
+    let lerp = |start: u8, end: u8| -> u8 {
+        (start as f32 + (end as f32 - start as f32) * t).round() as u8
+    };
+
+    Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+fn values_to_color_image(
+    values: impl Iterator<Item = f64>,
+    width: usize,
+    height: usize,
+    color_scale: ColorScale,
+    max_value: f64,
+) -> ColorImage {
+    let scale = max_value.max(1e-12);
+    let mut rgb = Vec::with_capacity(width * height * 3);
+
+    for value in values {
+        let color = color_scale.color(value / scale);
+        rgb.push(color.r());
+        rgb.push(color.g());
+        rgb.push(color.b());
+    }
+
+    ColorImage::from_rgb([width, height], &rgb)
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +164,7 @@ impl Default for FoodSettings {
 pub struct LeniaApp {
     world: Array2<f64>,
     params: LeniaParams,
+    color_scale: ColorScale,
     running: bool,
     steps_per_frame: usize,
     paint_tool: PaintTool,
@@ -56,6 +174,8 @@ pub struct LeniaApp {
     frame_counter: usize,
     texture: Option<TextureHandle>,
     kernel_texture: Option<TextureHandle>,
+    pending_world_rows: usize,
+    pending_world_cols: usize,
 }
 
 impl LeniaApp {
@@ -63,6 +183,7 @@ impl LeniaApp {
         let mut app = Self {
             world: random_world(WORLD_SIZE, WORLD_SIZE),
             params: LeniaParams::default(),
+            color_scale: ColorScale::Grayscale,
             running: true,
             steps_per_frame: 1,
             paint_tool: PaintTool::DrawLife,
@@ -72,6 +193,8 @@ impl LeniaApp {
             frame_counter: 0,
             texture: None,
             kernel_texture: None,
+            pending_world_rows: WORLD_SIZE,
+            pending_world_cols: WORLD_SIZE,
         };
         app.ensure_beta_count();
         app.regenerate_food_sources();
@@ -81,6 +204,45 @@ impl LeniaApp {
 
     fn ensure_beta_count(&mut self) {
         self.params.betas = self.params.normalized_betas();
+    }
+
+    fn apply_centered_gaussian_preset(&mut self) {
+        self.params = LeniaParams::default();
+        self.ensure_beta_count();
+    }
+
+    fn apply_gaussian_rings_preset(&mut self) {
+        self.params = LeniaParams::gaussian_rings_preset();
+        self.ensure_beta_count();
+    }
+
+    fn resize_world(&mut self, rows: usize, cols: usize) {
+        let rows = rows.clamp(MIN_WORLD_SIZE, MAX_WORLD_SIZE);
+        let cols = cols.clamp(MIN_WORLD_SIZE, MAX_WORLD_SIZE);
+        if rows == self.world.nrows() && cols == self.world.ncols() {
+            return;
+        }
+
+        let mut resized = Array2::<f64>::zeros((rows, cols));
+        let row_copy = rows.min(self.world.nrows());
+        let col_copy = cols.min(self.world.ncols());
+        let src_row_start = (self.world.nrows() - row_copy) / 2;
+        let src_col_start = (self.world.ncols() - col_copy) / 2;
+        let dst_row_start = (rows - row_copy) / 2;
+        let dst_col_start = (cols - col_copy) / 2;
+
+        for row in 0..row_copy {
+            for col in 0..col_copy {
+                resized[(dst_row_start + row, dst_col_start + col)] =
+                    self.world[(src_row_start + row, src_col_start + col)];
+            }
+        }
+
+        self.world = resized;
+        self.pending_world_rows = rows;
+        self.pending_world_cols = cols;
+        self.frame_counter = 0;
+        self.regenerate_food_sources();
     }
 
     fn regenerate_food_sources(&mut self) {
@@ -167,12 +329,13 @@ impl LeniaApp {
     }
 
     fn world_to_image(&self) -> ColorImage {
-        let grayscale: Vec<u8> = self
-            .world
-            .iter()
-            .map(|value| (value.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect();
-        ColorImage::from_gray([self.world.ncols(), self.world.nrows()], &grayscale)
+        values_to_color_image(
+            self.world.iter().copied(),
+            self.world.ncols(),
+            self.world.nrows(),
+            self.color_scale,
+            1.0,
+        )
     }
 
     fn refresh_texture(&mut self, ctx: &egui::Context) {
@@ -187,15 +350,13 @@ impl LeniaApp {
     fn kernel_to_image(&self) -> ColorImage {
         let kernel = generate_kernel(&self.params);
         let max_value = kernel.iter().copied().fold(0.0_f64, f64::max);
-        let grayscale: Vec<u8> = if max_value > 0.0 {
-            kernel
-                .iter()
-                .map(|value| ((value / max_value).clamp(0.0, 1.0) * 255.0) as u8)
-                .collect()
-        } else {
-            vec![0; kernel.len()]
-        };
-        ColorImage::from_gray([kernel.ncols(), kernel.nrows()], &grayscale)
+        values_to_color_image(
+            kernel.iter().copied(),
+            kernel.ncols(),
+            kernel.nrows(),
+            self.color_scale,
+            max_value.max(1e-12),
+        )
     }
 
     fn refresh_kernel_texture(&mut self, ctx: &egui::Context) {
@@ -311,14 +472,89 @@ impl LeniaApp {
                 self.world.fill(0.0);
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("field");
+            ui.add(
+                egui::DragValue::new(&mut self.pending_world_cols)
+                    .range(MIN_WORLD_SIZE..=MAX_WORLD_SIZE)
+                    .prefix("w "),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.pending_world_rows)
+                    .range(MIN_WORLD_SIZE..=MAX_WORLD_SIZE)
+                    .prefix("h "),
+            );
+            if ui.button("Apply Size").clicked() {
+                self.resize_world(self.pending_world_rows, self.pending_world_cols);
+            }
+        });
+        egui::ComboBox::from_label("color_scale")
+            .selected_text(self.color_scale.as_str())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.color_scale,
+                    ColorScale::Grayscale,
+                    ColorScale::Grayscale.as_str(),
+                );
+                ui.selectable_value(
+                    &mut self.color_scale,
+                    ColorScale::Viridis,
+                    ColorScale::Viridis.as_str(),
+                );
+                ui.selectable_value(
+                    &mut self.color_scale,
+                    ColorScale::Plasma,
+                    ColorScale::Plasma.as_str(),
+                );
+                ui.selectable_value(
+                    &mut self.color_scale,
+                    ColorScale::Inferno,
+                    ColorScale::Inferno.as_str(),
+                );
+                ui.selectable_value(
+                    &mut self.color_scale,
+                    ColorScale::Ocean,
+                    ColorScale::Ocean.as_str(),
+                );
+            });
         ui.add(egui::Slider::new(&mut self.steps_per_frame, 1..=8).text("steps/frame"));
         ui.label(format!(
-            "Mean population: {:.3}",
+            "Field: {}x{}  Mean population: {:.3}",
+            self.world.ncols(),
+            self.world.nrows(),
             self.world.sum() / (self.world.len() as f64)
         ));
 
         ui.separator();
         ui.collapsing("Lenia Parameters", |ui| {
+            let previous_mode = self.params.kernel_mode;
+            egui::ComboBox::from_label("kernel_mode")
+                .selected_text(self.params.kernel_mode.as_str())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.params.kernel_mode,
+                        KernelMode::CenteredGaussian,
+                        KernelMode::CenteredGaussian.as_str(),
+                    );
+                    ui.selectable_value(
+                        &mut self.params.kernel_mode,
+                        KernelMode::GaussianRings,
+                        KernelMode::GaussianRings.as_str(),
+                    );
+                });
+            if self.params.kernel_mode != previous_mode {
+                self.ensure_beta_count();
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("Gaussian Preset").clicked() {
+                    self.apply_centered_gaussian_preset();
+                }
+                if ui.button("Ring Preset").clicked() {
+                    self.apply_gaussian_rings_preset();
+                }
+            });
+
             let mut kernel_size = self.params.kernel_size as u32;
             if ui
                 .add(egui::Slider::new(&mut kernel_size, 3..=99).text("kernel_size"))
@@ -341,13 +577,29 @@ impl LeniaApp {
 
             self.ensure_beta_count();
             for (index, beta) in self.params.betas.iter_mut().enumerate() {
+                let (prefix, range) = match self.params.kernel_mode {
+                    KernelMode::CenteredGaussian => (format!("beta[{index}] "), 0.01..=25.0),
+                    KernelMode::GaussianRings if index == 0 => {
+                        ("core_width ".to_string(), 0.01..=25.0)
+                    }
+                    KernelMode::GaussianRings => {
+                        (format!("ring[{index}] "), 0.0..=8.0)
+                    }
+                };
                 ui.add(
                     egui::DragValue::new(beta)
                         .speed(0.05)
-                        .range(0.01..=25.0)
-                        .prefix(format!("beta[{index}] ")),
+                        .range(range)
+                        .prefix(prefix),
                 );
             }
+
+            ui.label(match self.params.kernel_mode {
+                KernelMode::CenteredGaussian => "Centered Gaussian: betas are Gaussian widths.",
+                KernelMode::GaussianRings => {
+                    "Gaussian Rings: beta[0] is the stable core width; later values boost outer rings."
+                }
+            });
 
             ui.add(
                 egui::Slider::new(&mut self.params.mu, 0.0..=2.0)
@@ -455,7 +707,14 @@ impl LeniaApp {
 
         ui.separator();
         ui.heading("Kernel Preview");
-        ui.label("Heatmap and radial average from kernel_size, num_peaks, and betas.");
+        ui.label(match self.params.kernel_mode {
+            KernelMode::CenteredGaussian => {
+                "Heatmap and radial average from kernel_size, num_peaks, and Gaussian widths."
+            }
+            KernelMode::GaussianRings => {
+                "Heatmap and radial average from a Gaussian core with ring boosts."
+            }
+        });
         let wide_layout = ui.available_width() >= 280.0;
         if wide_layout {
             ui.horizontal(|ui| {

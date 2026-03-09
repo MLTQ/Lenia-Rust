@@ -1,4 +1,5 @@
 This is an implementation of Lenia (continuous cellular automata) in Rust.
+<img width="1278" height="895" alt="image" src="https://github.com/user-attachments/assets/a2f191ca-9a18-4c18-9d41-be2863430c1f" />
 
 ## Frontends
 

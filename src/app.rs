@@ -1,5 +1,6 @@
 use crate::lenia::{
-    apply_circular_brush, random_world, run_step, stamp_gaussian_blob, GrowthFuncType, LeniaParams,
+    apply_circular_brush, generate_kernel, random_world, run_step, stamp_gaussian_blob,
+    GrowthFuncType, LeniaParams,
 };
 use eframe::egui::{self, ColorImage, Sense, TextureHandle, TextureOptions};
 use ndarray::Array2;
@@ -54,6 +55,7 @@ pub struct LeniaApp {
     food: FoodSettings,
     frame_counter: usize,
     texture: Option<TextureHandle>,
+    kernel_texture: Option<TextureHandle>,
 }
 
 impl LeniaApp {
@@ -69,6 +71,7 @@ impl LeniaApp {
             food: FoodSettings::default(),
             frame_counter: 0,
             texture: None,
+            kernel_texture: None,
         };
         app.ensure_beta_count();
         app.regenerate_food_sources();
@@ -179,6 +182,112 @@ impl LeniaApp {
         } else {
             self.texture = Some(ctx.load_texture("lenia-world", image, TextureOptions::NEAREST));
         }
+    }
+
+    fn kernel_to_image(&self) -> ColorImage {
+        let kernel = generate_kernel(&self.params);
+        let max_value = kernel.iter().copied().fold(0.0_f64, f64::max);
+        let grayscale: Vec<u8> = if max_value > 0.0 {
+            kernel
+                .iter()
+                .map(|value| ((value / max_value).clamp(0.0, 1.0) * 255.0) as u8)
+                .collect()
+        } else {
+            vec![0; kernel.len()]
+        };
+        ColorImage::from_gray([kernel.ncols(), kernel.nrows()], &grayscale)
+    }
+
+    fn refresh_kernel_texture(&mut self, ctx: &egui::Context) {
+        let image = self.kernel_to_image();
+        if let Some(texture) = &mut self.kernel_texture {
+            texture.set(image, TextureOptions::LINEAR);
+        } else {
+            self.kernel_texture =
+                Some(ctx.load_texture("lenia-kernel", image, TextureOptions::LINEAR));
+        }
+    }
+
+    fn kernel_radial_profile(&self) -> Vec<f64> {
+        let kernel = generate_kernel(&self.params);
+        let center_row = (kernel.nrows() as f64 - 1.0) * 0.5;
+        let center_col = (kernel.ncols() as f64 - 1.0) * 0.5;
+        let max_radius = center_row.min(center_col).floor() as usize;
+        let mut sums = vec![0.0; max_radius + 1];
+        let mut counts = vec![0usize; max_radius + 1];
+
+        for ((row, col), value) in kernel.indexed_iter() {
+            let dy = row as f64 - center_row;
+            let dx = col as f64 - center_col;
+            let radius = (dx * dx + dy * dy).sqrt().round() as usize;
+            if radius <= max_radius {
+                sums[radius] += *value;
+                counts[radius] += 1;
+            }
+        }
+
+        sums.into_iter()
+            .zip(counts)
+            .map(|(sum, count)| if count > 0 { sum / count as f64 } else { 0.0 })
+            .collect()
+    }
+
+    fn draw_radial_kernel_plot(&self, ui: &mut egui::Ui, size: egui::Vec2) {
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        let painter = ui.painter_at(rect);
+        let profile = self.kernel_radial_profile();
+        let max_value = profile.iter().copied().fold(0.0_f64, f64::max);
+
+        painter.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        );
+
+        if profile.len() < 2 || max_value <= 0.0 {
+            return;
+        }
+
+        let plot_rect = rect.shrink2(egui::vec2(10.0, 10.0));
+        painter.line_segment(
+            [
+                egui::pos2(plot_rect.left(), plot_rect.bottom()),
+                egui::pos2(plot_rect.right(), plot_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(plot_rect.left(), plot_rect.top()),
+                egui::pos2(plot_rect.left(), plot_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+        );
+
+        let points: Vec<egui::Pos2> = profile
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let x = if profile.len() == 1 {
+                    plot_rect.left()
+                } else {
+                    egui::lerp(
+                        plot_rect.left()..=plot_rect.right(),
+                        index as f32 / (profile.len() - 1) as f32,
+                    )
+                };
+                let y = egui::lerp(
+                    plot_rect.bottom()..=plot_rect.top(),
+                    (*value as f32 / max_value as f32).clamp(0.0, 1.0),
+                );
+                egui::pos2(x, y)
+            })
+            .collect();
+
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+        ));
     }
 
     fn draw_controls(&mut self, ui: &mut egui::Ui) {
@@ -343,6 +452,27 @@ impl LeniaApp {
             );
             ui.label("Click and drag on the simulation to paint.");
         });
+
+        ui.separator();
+        ui.heading("Kernel Preview");
+        ui.label("Heatmap and radial average from kernel_size, num_peaks, and betas.");
+        let wide_layout = ui.available_width() >= 280.0;
+        if wide_layout {
+            ui.horizontal(|ui| {
+                if let Some(texture) = self.kernel_texture.as_ref() {
+                    let side = 128.0_f32.min(ui.available_width() * 0.45).max(110.0);
+                    ui.add(egui::Image::new((texture.id(), egui::vec2(side, side))));
+                }
+                let plot_width = ui.available_width().max(110.0);
+                self.draw_radial_kernel_plot(ui, egui::vec2(plot_width, 128.0));
+            });
+        } else {
+            if let Some(texture) = self.kernel_texture.as_ref() {
+                let side = ui.available_width().min(220.0).max(120.0);
+                ui.add(egui::Image::new((texture.id(), egui::vec2(side, side))));
+            }
+            self.draw_radial_kernel_plot(ui, egui::vec2(ui.available_width().max(120.0), 128.0));
+        }
     }
 
     fn draw_canvas(&mut self, ui: &mut egui::Ui) {
@@ -395,11 +525,16 @@ impl eframe::App for LeniaApp {
         }
 
         self.refresh_texture(ctx);
+        self.refresh_kernel_texture(ctx);
 
         egui::SidePanel::left("controls")
             .resizable(true)
             .default_width(320.0)
-            .show(ctx, |ui| self.draw_controls(ui));
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.draw_controls(ui));
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Lenia");

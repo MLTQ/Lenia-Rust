@@ -34,8 +34,7 @@ can "sense" and interact with a wider range of neighboring cells, while a smalle
 num_peaks: This parameter specifies the number of peaks in the kernel function. Multiple peaks can result in more complex interaction patterns between cells, as they introduce different interaction strengths at different 
 distances.
 
-betas: This is an array containing the beta values used to define the shape of the kernel function. Higher beta values result in a more "peaked" function, meaning that interactions between cells are more focused around the 
-peaks, while lower beta values produce a smoother function, leading to more diffuse interactions.
+betas: This is an array containing the beta values used to define the shape of the kernel function. Higher beta values result in a more "peaked" function, meaning that interactions between cells are more focused around the peaks, while lower beta values produce a smoother function, leading to more diffuse interactions.
 
 mu: This is the life parameter, which controls the balance between the growth and decay of cell states. Higher values of mu favor growth, while lower values favor decay. Adjusting mu can change the overall dynamics of the 
 system and determine whether patterns emerge or fade away.
@@ -50,8 +49,5 @@ growth_func_type: This parameter determines the type of growth function used in 
 EXPONENTIAL, and STEP.
 
 Keep in mind that these parameters can interact with each other in complex ways, so finding the right combination to produce desired behaviors might require some experimentation and fine-tuning.
-
-
-
 
 

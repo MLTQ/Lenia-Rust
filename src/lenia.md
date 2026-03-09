@@ -17,6 +17,10 @@ Contains Lenia simulation math, parameter types, single-step evolution, and brus
 - **Does**: Runs a full Lenia update step: kernel generation, convolution, growth mapping, and clamped integration.
 - **Interacts with**: Called by `LeniaApp::step_once` and `ffi::run_lenia`.
 
+### `generate_kernel`
+- **Does**: Builds the parameterized 2D kernel used by Lenia updates by averaging multiple center-aligned Gaussian components.
+- **Interacts with**: `run_step` and kernel preview rendering in `app.rs`.
+
 ### `apply_circular_brush`
 - **Does**: Adds/removes life around a brush center with circular falloff mask.
 - **Interacts with**: Drawing tools in `app.rs`.
@@ -34,9 +38,11 @@ Contains Lenia simulation math, parameter types, single-step evolution, and brus
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
 | `app.rs` | `run_step` returns a same-size clamped world | Shape/value range contract changes |
+| `app.rs` | `generate_kernel` returns a non-empty centered kernel for current params | Removing/changing kernel normalization semantics |
 | `ffi.rs` | `GrowthFuncType` is `#[repr(C)]` and stable | Reordering/removing enum variants |
 | UI controls | `LeniaParams::normalized_betas` pads/truncates safely | Panics or changing beta normalization behavior |
 
 ## Notes
 - Convolution uses toroidal wraparound to match prior behavior.
 - `kernel_size` is forced odd internally so the kernel remains centered.
+- `betas` are interpreted as Gaussian widths, not explicit shell amplitudes.

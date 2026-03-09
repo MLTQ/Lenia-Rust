@@ -192,7 +192,7 @@ fn convolve2d_periodic(input: &ArrayView2<f64>, kernel: &Array2<f64>) -> Array2<
     output
 }
 
-fn generate_kernel(params: &LeniaParams) -> Array2<f64> {
+pub fn generate_kernel(params: &LeniaParams) -> Array2<f64> {
     let kernel_size = params.kernel_size.max(1) | 1;
     let peak_count = params.num_peaks.max(1);
     let betas = params.normalized_betas();

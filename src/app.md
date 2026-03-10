@@ -1,22 +1,26 @@
 # app.rs
 
 ## Purpose
-Implements a native `eframe/egui` frontend for Lenia with full parameter tuning, simulation controls, resizable fields, alternate color scales, an explorer search mode, interactive drawing/food placement, and a live kernel preview panel with both a heatmap and radial plot.
+Implements a native `eframe/egui` frontend for Lenia with full parameter tuning, simulation controls, resizable fields, alternate color scales, a curated species library, an explorer search mode, interactive drawing/food placement, and a live kernel preview panel with both a heatmap and radial plot.
 
 ## Components
 
 ### `LeniaApp`
-- **Does**: Owns world state, current simulation params, field sizing state, color scale state, tool state, food settings, and display textures.
-- **Interacts with**: Utility functions in `lenia.rs` and `eframe::App` runtime.
+- **Does**: Owns world state, current simulation params, selected species preset, field sizing state, color scale state, tool state, food settings, and display textures.
+- **Interacts with**: Utility functions in `lenia.rs`, curated presets in `species.rs`, and the `eframe::App` runtime.
 
 ### `LeniaApp::draw_controls`
-- **Does**: Renders play/pause, step, randomize/clear, field size controls, color scale controls, all Lenia parameter controls, food settings, and drawing tool controls.
-- **Interacts with**: Mutates `LeniaApp` fields and calls helper methods (`apply_food_sources`, `regenerate_food_sources`).
+- **Does**: Renders play/pause, step, randomize/clear, field size controls, color scale controls, the species library chooser, all Lenia parameter controls, food settings, and drawing tool controls.
+- **Interacts with**: Mutates `LeniaApp` fields and calls helper methods (`apply_food_sources`, `regenerate_food_sources`, `apply_selected_species`).
 - **Rationale**: Intended to live inside a vertical scroll area so lower controls and kernel previews remain reachable on shorter windows.
 
 ### `LeniaApp::apply_centered_gaussian_preset` and `LeniaApp::apply_gaussian_rings_preset`
 - **Does**: Loads stable parameter bundles for the legacy Gaussian kernel and the experimental ringed kernel.
 - **Interacts with**: `LeniaParams` presets in `lenia.rs` and the preset buttons in the controls pane.
+
+### `LeniaApp::apply_selected_species`
+- **Does**: Loads a curated archived Lenia organism, applies its official kernel/growth settings, resizes the field, centers the pattern, and disables periodic food.
+- **Interacts with**: `curated_species` in `species.rs`, `LeniaParams::from_official_lenia`, and egui species controls.
 
 ### `LeniaApp::resize_world`
 - **Does**: Reallocates the field to a requested size while preserving the centered overlapping region of the old state.
@@ -57,6 +61,7 @@ Implements a native `eframe/egui` frontend for Lenia with full parameter tuning,
 | `main.rs` | `run()` returns `eframe::Result<()>` | Signature change |
 | User interaction | Drag/click painting updates simulation grid immediately | Removing pointer-to-grid mapping |
 | Existing workflow | Food refresh supports fixed and randomized source placement | Removing periodic food controls |
+| Species loading | Loading a curated species applies official band-kernel params and a recommended field size in one action | Breaking preset mapping or species world replacement |
 | Parameter tuning UX | Bottom pane shows current kernel heatmap and radial profile for the selected kernel mode | Removing or desynchronizing preview refresh |
 | Runtime sizing | Applying a new field size preserves centered content and updates pointer mapping to new dimensions | Breaking resize semantics or leaving stale dimensions |
 | Explorer workflow | Search results reflect local mutations around the current params and can be applied directly | Breaking candidate scoring, mutation, or apply semantics |
@@ -67,5 +72,6 @@ Implements a native `eframe/egui` frontend for Lenia with full parameter tuning,
 - Kernel preview texture and radial plot are refreshed each frame to stay in sync with slider changes.
 - The settings panel is scrollable so the kernel preview remains accessible even when the window is short.
 - Kernel mode changes do not affect the Python FFI path; they are only exposed through the native app.
+- Species loading currently uses a curated embedded library sourced from the upstream Lenia archive rather than attempting to import the entire dataset.
 - Color scales affect both the simulation field and the kernel preview so the palette stays visually consistent.
 - Explorer search uses a smaller centered copy of the field for speed, so it is a local heuristic rather than a full-resolution guarantee.

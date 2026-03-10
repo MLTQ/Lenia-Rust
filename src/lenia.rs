@@ -18,12 +18,51 @@ impl GrowthFuncType {
             Self::Step => "STEP",
         }
     }
+
+    pub fn from_official_index(index: usize) -> Option<Self> {
+        match index {
+            1 => Some(Self::Polynomial),
+            2 => Some(Self::Exponential),
+            3 => Some(Self::Step),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelCoreType {
+    Polynomial,
+    Exponential,
+    Step,
+    Staircase,
+}
+
+impl KernelCoreType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Polynomial => "POLYNOMIAL",
+            Self::Exponential => "EXPONENTIAL",
+            Self::Step => "STEP",
+            Self::Staircase => "STAIRCASE",
+        }
+    }
+
+    pub fn from_official_index(index: usize) -> Option<Self> {
+        match index {
+            1 => Some(Self::Polynomial),
+            2 => Some(Self::Exponential),
+            3 => Some(Self::Step),
+            4 => Some(Self::Staircase),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelMode {
     CenteredGaussian,
     GaussianRings,
+    LeniaBands,
 }
 
 impl KernelMode {
@@ -31,6 +70,7 @@ impl KernelMode {
         match self {
             Self::CenteredGaussian => "CENTERED_GAUSSIAN",
             Self::GaussianRings => "GAUSSIAN_RINGS",
+            Self::LeniaBands => "LENIA_BANDS",
         }
     }
 }
@@ -38,6 +78,7 @@ impl KernelMode {
 #[derive(Clone, Debug)]
 pub struct LeniaParams {
     pub kernel_mode: KernelMode,
+    pub kernel_core_type: KernelCoreType,
     pub kernel_size: usize,
     pub num_peaks: usize,
     pub betas: Vec<f64>,
@@ -51,6 +92,7 @@ impl Default for LeniaParams {
     fn default() -> Self {
         Self {
             kernel_mode: KernelMode::CenteredGaussian,
+            kernel_core_type: KernelCoreType::Exponential,
             kernel_size: 21,
             num_peaks: 2,
             betas: vec![1.0, 5.0],
@@ -66,6 +108,7 @@ impl LeniaParams {
     pub fn gaussian_rings_preset() -> Self {
         Self {
             kernel_mode: KernelMode::GaussianRings,
+            kernel_core_type: KernelCoreType::Exponential,
             kernel_size: 39,
             num_peaks: 3,
             betas: vec![4.5, 2.0, 1.0],
@@ -73,6 +116,29 @@ impl LeniaParams {
             sigma: 0.18,
             dt: 0.04,
             growth_func_type: GrowthFuncType::Exponential,
+        }
+    }
+
+    pub fn from_official_lenia(
+        radius: usize,
+        time_scale: usize,
+        betas: Vec<f64>,
+        mu: f64,
+        sigma: f64,
+        kernel_core_type: KernelCoreType,
+        growth_func_type: GrowthFuncType,
+    ) -> Self {
+        let num_peaks = betas.len().max(1);
+        Self {
+            kernel_mode: KernelMode::LeniaBands,
+            kernel_core_type,
+            kernel_size: radius.max(1) * 2 + 1,
+            num_peaks,
+            betas: if betas.is_empty() { vec![1.0] } else { betas },
+            mu,
+            sigma,
+            dt: 1.0 / time_scale.max(1) as f64,
+            growth_func_type,
         }
     }
 
@@ -96,6 +162,7 @@ impl LeniaParams {
                 KernelMode::CenteredGaussian => beta.max(0.0001),
                 KernelMode::GaussianRings if index == 0 => beta.max(0.0001),
                 KernelMode::GaussianRings => beta.max(0.0),
+                KernelMode::LeniaBands => beta.max(0.0),
             };
         }
 
@@ -230,6 +297,7 @@ pub fn generate_kernel(params: &LeniaParams) -> Array2<f64> {
     match params.kernel_mode {
         KernelMode::CenteredGaussian => generate_centered_gaussian_kernel(params),
         KernelMode::GaussianRings => generate_gaussian_rings_kernel(params),
+        KernelMode::LeniaBands => generate_lenia_bands_kernel(params),
     }
 }
 
@@ -298,9 +366,76 @@ fn generate_gaussian_rings_kernel(params: &LeniaParams) -> Array2<f64> {
     kernel
 }
 
+fn kernel_core_value(kernel_core_type: KernelCoreType, radius_fraction: f64) -> f64 {
+    let radius_fraction = radius_fraction.clamp(0.0, 1.0);
+    match kernel_core_type {
+        KernelCoreType::Polynomial => {
+            let term = 4.0 * radius_fraction * (1.0 - radius_fraction);
+            term.max(0.0).powi(4)
+        }
+        KernelCoreType::Exponential => {
+            if radius_fraction <= 0.0 || radius_fraction >= 1.0 {
+                0.0
+            } else {
+                (4.0 - 1.0 / (radius_fraction * (1.0 - radius_fraction))).exp()
+            }
+        }
+        KernelCoreType::Step => {
+            if (0.25..=0.75).contains(&radius_fraction) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        KernelCoreType::Staircase => {
+            if (0.25..=0.75).contains(&radius_fraction) {
+                1.0
+            } else if radius_fraction < 0.25 {
+                0.5
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+fn generate_lenia_bands_kernel(params: &LeniaParams) -> Array2<f64> {
+    let kernel_size = params.kernel_size.max(3) | 1;
+    let peak_count = params.num_peaks.max(1);
+    let betas = params.normalized_betas();
+    let center = (kernel_size - 1) as f64 / 2.0;
+    let max_radius = center.max(1.0);
+    let mut kernel = Array2::<f64>::zeros((kernel_size, kernel_size));
+
+    for ((row, col), value) in kernel.indexed_iter_mut() {
+        let dy = row as f64 - center;
+        let dx = col as f64 - center;
+        let normalized_radius = (dx * dx + dy * dy).sqrt() / max_radius;
+
+        if normalized_radius >= 1.0 {
+            *value = 0.0;
+            continue;
+        }
+
+        let band_position = normalized_radius * peak_count as f64;
+        let band_index = band_position.floor().min((peak_count - 1) as f64) as usize;
+        let shell_weight = betas[band_index];
+        let local_radius = band_position.fract();
+
+        *value = shell_weight * kernel_core_value(params.kernel_core_type, local_radius);
+    }
+
+    let kernel_mass = kernel.sum();
+    if kernel_mass > 0.0 {
+        kernel.mapv_inplace(|value| value / kernel_mass);
+    }
+
+    kernel
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{generate_kernel, KernelMode, LeniaParams};
+    use super::{generate_kernel, KernelCoreType, KernelMode, LeniaParams};
 
     #[test]
     fn gaussian_rings_kernel_has_multiple_radial_peaks_for_preset() {
@@ -336,6 +471,32 @@ mod tests {
             peak_count >= 2,
             "expected multiple radial peaks, got {peak_count}"
         );
+    }
+
+    #[test]
+    fn lenia_bands_kernel_is_normalized_and_zero_outside_radius() {
+        let params = LeniaParams::from_official_lenia(
+            13,
+            10,
+            vec![0.5, 1.0, 0.5],
+            0.2,
+            0.03,
+            KernelCoreType::Polynomial,
+            super::GrowthFuncType::Polynomial,
+        );
+        let kernel = generate_kernel(&params);
+        let center = (kernel.nrows() as f64 - 1.0) * 0.5;
+
+        assert!((kernel.sum() - 1.0).abs() < 1e-9);
+
+        for ((row, col), value) in kernel.indexed_iter() {
+            let dy = row as f64 - center;
+            let dx = col as f64 - center;
+            let normalized_radius = (dx * dx + dy * dy).sqrt() / center.max(1.0);
+            if normalized_radius >= 1.0 {
+                assert_eq!(*value, 0.0);
+            }
+        }
     }
 }
 

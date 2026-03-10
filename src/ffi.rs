@@ -1,4 +1,4 @@
-use crate::lenia::{run_step, GrowthFuncType, KernelMode, LeniaParams};
+use crate::lenia::{run_step, GrowthFuncType, KernelCoreType, KernelMode, LeniaParams};
 use ndarray::{ArrayView2, ArrayViewMut2};
 use std::os::raw::{c_double, c_int};
 
@@ -35,6 +35,7 @@ pub extern "C" fn run_lenia(
 
     let params = LeniaParams {
         kernel_mode: KernelMode::CenteredGaussian,
+        kernel_core_type: KernelCoreType::Exponential,
         kernel_size: kernel_size as usize,
         num_peaks: peak_count,
         betas,

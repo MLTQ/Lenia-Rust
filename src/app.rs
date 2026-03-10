@@ -1,7 +1,8 @@
 use crate::lenia::{
     apply_circular_brush, generate_kernel, random_world, run_step, stamp_gaussian_blob,
-    GrowthFuncType, KernelMode, LeniaParams,
+    GrowthFuncType, KernelCoreType, KernelMode, LeniaParams,
 };
+use crate::species::curated_species;
 use eframe::egui::{self, Color32, ColorImage, Sense, TextureHandle, TextureOptions};
 use ndarray::Array2;
 use rand::Rng;
@@ -231,6 +232,7 @@ impl Default for FoodSettings {
 pub struct LeniaApp {
     world: Array2<f64>,
     params: LeniaParams,
+    selected_species_index: usize,
     color_scale: ColorScale,
     running: bool,
     steps_per_frame: usize,
@@ -252,6 +254,7 @@ impl LeniaApp {
         let mut app = Self {
             world: random_world(WORLD_SIZE, WORLD_SIZE),
             params: LeniaParams::default(),
+            selected_species_index: 0,
             color_scale: ColorScale::Grayscale,
             running: true,
             steps_per_frame: 1,
@@ -284,6 +287,25 @@ impl LeniaApp {
 
     fn apply_gaussian_rings_preset(&mut self) {
         self.params = LeniaParams::gaussian_rings_preset();
+        self.ensure_beta_count();
+    }
+
+    fn apply_selected_species(&mut self) {
+        let Some(species) = curated_species().get(self.selected_species_index).copied() else {
+            return;
+        };
+        let Some(loaded) = species.load() else {
+            return;
+        };
+
+        self.params = loaded.params;
+        self.world = loaded.world;
+        self.pending_world_rows = self.world.nrows();
+        self.pending_world_cols = self.world.ncols();
+        self.food.enabled = false;
+        self.food.source_positions.clear();
+        self.frame_counter = 0;
+        self.explorer_results.clear();
         self.ensure_beta_count();
     }
 
@@ -355,6 +377,10 @@ impl LeniaApp {
                 KernelMode::GaussianRings => {
                     let delta = rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 2.5;
                     *beta = (*beta + delta).clamp(0.0, 8.0);
+                }
+                KernelMode::LeniaBands => {
+                    let delta = rng.gen_range(-1.0..=1.0) * self.explorer.mutation_scale * 0.35;
+                    *beta = (*beta + delta).clamp(0.05, 2.0);
                 }
             }
         }
@@ -693,6 +719,39 @@ impl LeniaApp {
         ));
 
         ui.separator();
+        ui.collapsing("Species Library", |ui| {
+            let species = curated_species();
+            if species.is_empty() {
+                ui.label("No species presets embedded.");
+                return;
+            }
+
+            egui::ComboBox::from_label("species")
+                .selected_text(
+                    species[self.selected_species_index.min(species.len() - 1)].short_label(),
+                )
+                .show_ui(ui, |ui| {
+                    for (index, preset) in species.iter().copied().enumerate() {
+                        ui.selectable_value(
+                            &mut self.selected_species_index,
+                            index,
+                            preset.short_label(),
+                        );
+                    }
+                });
+
+            let selected = species[self.selected_species_index.min(species.len() - 1)];
+            ui.label(selected.detail_label());
+            ui.label(
+                "Loads the archived pattern into a recommended field and applies official R/T/b/m/s/kn/gn settings with the LENIA_BANDS kernel.",
+            );
+            ui.label("Field size is chosen automatically from the archived pattern and kernel radius.");
+            if ui.button("Load Species").clicked() {
+                self.apply_selected_species();
+            }
+        });
+
+        ui.separator();
         ui.collapsing("Lenia Parameters", |ui| {
             let previous_mode = self.params.kernel_mode;
             egui::ComboBox::from_label("kernel_mode")
@@ -708,9 +767,41 @@ impl LeniaApp {
                         KernelMode::GaussianRings,
                         KernelMode::GaussianRings.as_str(),
                     );
+                    ui.selectable_value(
+                        &mut self.params.kernel_mode,
+                        KernelMode::LeniaBands,
+                        KernelMode::LeniaBands.as_str(),
+                    );
                 });
             if self.params.kernel_mode != previous_mode {
                 self.ensure_beta_count();
+            }
+
+            if matches!(self.params.kernel_mode, KernelMode::LeniaBands) {
+                egui::ComboBox::from_label("kernel_core_type")
+                    .selected_text(self.params.kernel_core_type.as_str())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.params.kernel_core_type,
+                            KernelCoreType::Polynomial,
+                            KernelCoreType::Polynomial.as_str(),
+                        );
+                        ui.selectable_value(
+                            &mut self.params.kernel_core_type,
+                            KernelCoreType::Exponential,
+                            KernelCoreType::Exponential.as_str(),
+                        );
+                        ui.selectable_value(
+                            &mut self.params.kernel_core_type,
+                            KernelCoreType::Step,
+                            KernelCoreType::Step.as_str(),
+                        );
+                        ui.selectable_value(
+                            &mut self.params.kernel_core_type,
+                            KernelCoreType::Staircase,
+                            KernelCoreType::Staircase.as_str(),
+                        );
+                    });
             }
 
             ui.horizontal(|ui| {
@@ -752,6 +843,7 @@ impl LeniaApp {
                     KernelMode::GaussianRings => {
                         (format!("ring[{index}] "), 0.0..=8.0)
                     }
+                    KernelMode::LeniaBands => (format!("shell[{index}] "), 0.0..=2.0),
                 };
                 ui.add(
                     egui::DragValue::new(beta)
@@ -765,6 +857,9 @@ impl LeniaApp {
                 KernelMode::CenteredGaussian => "Centered Gaussian: betas are Gaussian widths.",
                 KernelMode::GaussianRings => {
                     "Gaussian Rings: beta[0] is the stable core width; later values boost outer rings."
+                }
+                KernelMode::LeniaBands => {
+                    "Lenia Bands: shell weights follow the official segmented kernel; dt is 1/T."
                 }
             });
 
@@ -923,6 +1018,9 @@ impl LeniaApp {
             }
             KernelMode::GaussianRings => {
                 "Heatmap and radial average from a Gaussian core with ring boosts."
+            }
+            KernelMode::LeniaBands => {
+                "Heatmap and radial average from the official Lenia shell kernel and selected kernel core."
             }
         });
         let wide_layout = ui.available_width() >= 280.0;

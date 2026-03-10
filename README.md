@@ -13,8 +13,9 @@ What you can do in the egui app:
 - Play/pause the simulation, single-step, clear, randomize
 - Resize the field at runtime
 - Switch between multiple color scales
+- Load a curated library of published Lenia species and apply their archived settings/patterns
 - Run an explorer search that mutates the current parameters and keeps the highest-scoring nearby variants
-- Tune Lenia parameters: `kernel_mode`, `kernel_size`, `num_peaks`, `betas`, `mu`, `sigma`, `dt`, `growth_func_type`
+- Tune Lenia parameters: `kernel_mode`, `kernel_core_type`, `kernel_size`, `num_peaks`, `betas`, `mu`, `sigma`, `dt`, `growth_func_type`
 - Enable periodic food placement (fixed or randomized food sources)
 - Draw directly on the grid with:
   - `Draw Life`
@@ -38,9 +39,11 @@ can "sense" and interact with a wider range of neighboring cells, while a smalle
 num_peaks: This parameter specifies the number of peaks in the kernel function. Multiple peaks can result in more complex interaction patterns between cells, as they introduce different interaction strengths at different 
 distances.
 
-kernel_mode: This selects which kernel family is used. `CENTERED_GAUSSIAN` keeps the original stable behavior. `GAUSSIAN_RINGS` keeps a Gaussian core but boosts concentric rings and is intended to be used with its preset as a starting point.
+kernel_mode: This selects which kernel family is used. `CENTERED_GAUSSIAN` keeps the original stable behavior. `GAUSSIAN_RINGS` keeps a Gaussian core but boosts concentric rings and is intended to be used with its preset as a starting point. `LENIA_BANDS` matches the segmented radial kernel used by published Lenia species.
 
-betas: These values depend on the kernel mode. In `CENTERED_GAUSSIAN`, they are Gaussian widths. In `GAUSSIAN_RINGS`, `beta[0]` is the core width and later values boost successive rings.
+kernel_core_type: This selects the within-band profile for `LENIA_BANDS`. It matches the original Lenia `kn` setting: `POLYNOMIAL`, `EXPONENTIAL`, `STEP`, or `STAIRCASE`.
+
+betas: These values depend on the kernel mode. In `CENTERED_GAUSSIAN`, they are Gaussian widths. In `GAUSSIAN_RINGS`, `beta[0]` is the core width and later values boost successive rings. In `LENIA_BANDS`, they are shell weights matching the published Lenia `b` values.
 
 mu: This is the life parameter, which controls the balance between the growth and decay of cell states. Higher values of mu favor growth, while lower values favor decay. Adjusting mu can change the overall dynamics of the 
 system and determine whether patterns emerge or fade away.

@@ -17,10 +17,14 @@ Library entrypoint that exposes Lenia simulation primitives, the native egui app
 - **Does**: Hosts all simulation math and grid-edit helpers.
 - **Interacts with**: Both `app.rs` and `ffi.rs`.
 
+### `pub mod species`
+- **Does**: Exposes the curated upstream Lenia species library and runtime loaders.
+- **Interacts with**: `app.rs` for species selection and `lenia.rs` for official-parameter conversion.
+
 ## Contracts
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
 | `src/main.rs` | `app::run()` is accessible through crate exports | Renaming/removing `app` module |
 | Python ctypes loader | `run_lenia` symbol is exported from cdylib | Symbol name/signature changes |
-| Internal Rust code | `GrowthFuncType`, `KernelMode`, `LeniaParams` are re-exported | Removing/retyping these re-exports |
+| Internal Rust code | `GrowthFuncType`, `KernelCoreType`, `KernelMode`, and `LeniaParams` are re-exported | Removing/retyping these re-exports |

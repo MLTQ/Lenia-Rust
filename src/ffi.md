@@ -6,7 +6,7 @@ Provides the `run_lenia` C ABI function so external callers (Python ctypes front
 ## Components
 
 ### `run_lenia`
-- **Does**: Validates pointers/dimensions, maps raw buffers to ndarray views, builds `LeniaParams`, and writes stepped output.
+- **Does**: Validates pointers/dimensions, maps raw buffers to ndarray views, builds legacy centered-Gaussian `LeniaParams`, and writes stepped output.
 - **Interacts with**: `run_step` in `lenia.rs` and dynamic library consumers.
 - **Rationale**: Keeps unsafe FFI boundary isolated from simulation math and UI code.
 
@@ -17,4 +17,4 @@ Provides the `run_lenia` C ABI function so external callers (Python ctypes front
 | `tester.py` | Signature and parameter order match ctypes definition | Reordering args / changing numeric types |
 | cdylib export | Symbol name is exactly `run_lenia` | Renaming/removing `#[no_mangle]` |
 | `lenia.rs` | `run_step` accepts owned input and returns output matrix | Return type/signature changes |
-| Native UI evolution | FFI remains on the legacy centered-Gaussian kernel unless ABI is extended | Changing the implicit kernel mode |
+| Native UI evolution | FFI remains on the legacy centered-Gaussian kernel and ignores newer kernel-core/species features unless the ABI is extended | Changing the implicit kernel mode or default core assumptions |

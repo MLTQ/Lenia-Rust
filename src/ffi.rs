@@ -43,6 +43,7 @@ pub extern "C" fn run_lenia(
         sigma,
         dt,
         growth_func_type,
+        mace_beta: None,
     };
 
     let output_array = run_step(&input_array.to_owned(), &params);

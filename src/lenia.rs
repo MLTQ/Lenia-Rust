@@ -86,6 +86,10 @@ pub struct LeniaParams {
     pub sigma: f64,
     pub dt: f64,
     pub growth_func_type: GrowthFuncType,
+    /// When `Some(β)`, the MaCE (Mass-Conserving Evolution) update is used
+    /// instead of the standard `A + G·dt` step. β is the inverse temperature:
+    /// 0 → pure diffusion, larger values → mass flows toward high-growth cells.
+    pub mace_beta: Option<f64>,
 }
 
 impl Default for LeniaParams {
@@ -100,6 +104,7 @@ impl Default for LeniaParams {
             sigma: 0.14,
             dt: 0.101,
             growth_func_type: GrowthFuncType::Exponential,
+            mace_beta: None,
         }
     }
 }
@@ -116,6 +121,7 @@ impl LeniaParams {
             sigma: 0.18,
             dt: 0.04,
             growth_func_type: GrowthFuncType::Exponential,
+            mace_beta: None,
         }
     }
 
@@ -139,6 +145,7 @@ impl LeniaParams {
             sigma,
             dt: 1.0 / time_scale.max(1) as f64,
             growth_func_type,
+            mace_beta: None,
         }
     }
 
@@ -188,7 +195,65 @@ pub fn run_step(input: &Array2<f64>, params: &LeniaParams) -> Array2<f64> {
         params.sigma,
         params.growth_func_type,
     );
-    update_world_array(input, &growth_mapped, params.dt)
+    if let Some(beta) = params.mace_beta {
+        apply_mace_update(input, &growth_mapped, beta)
+    } else {
+        update_world_array(input, &growth_mapped, params.dt)
+    }
+}
+
+/// Apply one MaCE (Mass-Conserving Evolution) update step.
+///
+/// Uses the growth values as an affinity field. Mass flows from each cell
+/// toward its high-affinity neighbours while exactly conserving the total sum.
+///
+/// Algorithm (Papadopoulos & Guichard 2025, Eq. 2-3):
+///   Z[i,j]   = Σ_{(k,l) ∈ N(i,j)} exp(β · A[k,l])
+///   ρ_new[i,j] = Σ_{(i',j') ∈ N(i,j)} exp(β · A[i,j]) / Z[i',j'] · ρ[i',j']
+///
+/// N is the 3×3 Moore neighbourhood with toroidal wrapping.
+/// β = 0 → pure diffusion; larger β → sharper advection toward high-affinity cells.
+pub fn apply_mace_update(rho: &Array2<f64>, affinity: &Array2<f64>, beta: f64) -> Array2<f64> {
+    let (rows, cols) = rho.dim();
+
+    // Step 1: Z[i,j] = Σ_{(k,l) ∈ N(i,j)} exp(β·A[k,l])
+    let mut z = Array2::<f64>::zeros((rows, cols));
+    for row in 0..rows {
+        for col in 0..cols {
+            let mut sum = 0.0;
+            for dr in -1isize..=1 {
+                for dc in -1isize..=1 {
+                    let r = wrap_index(row as isize + dr, rows);
+                    let c = wrap_index(col as isize + dc, cols);
+                    sum += (beta * affinity[(r, c)]).exp();
+                }
+            }
+            z[(row, col)] = sum.max(f64::EPSILON);
+        }
+    }
+
+    // Step 2: redistribute mass.
+    // ρ_new[i,j] = Σ_{(i',j') ∈ N(i,j)}  exp(β·A[i,j]) / Z[i',j']  ·  ρ[i',j']
+    // Each neighbour (i',j') donates a share of its mass proportional to
+    // the attractiveness of (i,j) relative to the total attractiveness visible
+    // from (i',j').
+    let mut rho_new = Array2::<f64>::zeros((rows, cols));
+    for row in 0..rows {
+        for col in 0..cols {
+            let exp_a = (beta * affinity[(row, col)]).exp();
+            let mut acc = 0.0;
+            for dr in -1isize..=1 {
+                for dc in -1isize..=1 {
+                    let r = wrap_index(row as isize + dr, rows);
+                    let c = wrap_index(col as isize + dc, cols);
+                    acc += exp_a / z[(r, c)] * rho[(r, c)];
+                }
+            }
+            rho_new[(row, col)] = acc;
+        }
+    }
+
+    rho_new
 }
 
 pub fn apply_circular_brush(

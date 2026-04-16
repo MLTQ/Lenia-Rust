@@ -520,12 +520,19 @@ impl LeniaApp {
     }
 
     fn world_to_image(&self) -> ColorImage {
+        // In MaCE mode values can exceed 1.0 as mass concentrates, so
+        // normalise to the actual max to keep the colour scale meaningful.
+        let max_value = if self.params.mace_beta.is_some() {
+            self.world.iter().copied().fold(0.0_f64, f64::max).max(1e-12)
+        } else {
+            1.0
+        };
         values_to_color_image(
             self.world.iter().copied(),
             self.world.ncols(),
             self.world.nrows(),
             self.color_scale,
-            1.0,
+            max_value,
         )
     }
 
@@ -711,12 +718,23 @@ impl LeniaApp {
                 );
             });
         ui.add(egui::Slider::new(&mut self.steps_per_frame, 1..=8).text("steps/frame"));
-        ui.label(format!(
-            "Field: {}x{}  Mean population: {:.3}",
-            self.world.ncols(),
-            self.world.nrows(),
-            self.world.sum() / (self.world.len() as f64)
-        ));
+        if self.params.mace_beta.is_some() {
+            let total = self.world.sum();
+            ui.label(format!(
+                "Field: {}x{}  Total mass: {:.1}  Mean: {:.3}",
+                self.world.ncols(),
+                self.world.nrows(),
+                total,
+                total / self.world.len() as f64,
+            ));
+        } else {
+            ui.label(format!(
+                "Field: {}x{}  Mean population: {:.3}",
+                self.world.ncols(),
+                self.world.nrows(),
+                self.world.sum() / (self.world.len() as f64)
+            ));
+        }
 
         ui.separator();
         ui.collapsing("Species Library", |ui| {
@@ -898,6 +916,21 @@ impl LeniaApp {
                         GrowthFuncType::Step.as_str(),
                     );
                 });
+
+            ui.separator();
+            ui.label("MaCE — Mass-Conserving Evolution");
+            let mut mace_enabled = self.params.mace_beta.is_some();
+            if ui.checkbox(&mut mace_enabled, "Enable MaCE").changed() {
+                self.params.mace_beta = if mace_enabled { Some(2.0) } else { None };
+            }
+            if let Some(beta) = &mut self.params.mace_beta {
+                ui.add(
+                    egui::Slider::new(beta, 0.0..=20.0)
+                        .text("mace_beta")
+                        .step_by(0.1),
+                );
+                ui.label("β=0: pure diffusion. Large β: mass flows toward high-growth cells. Total mass is conserved.");
+            }
         });
 
         ui.separator();
